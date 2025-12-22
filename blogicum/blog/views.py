@@ -1,14 +1,18 @@
 from .forms import CommentForm, PostForm, UserProfileForm
 from .models import Post, Category, Comment
+from .utils import (
+    get_posts_with_comments_count,
+    get_paginated_page,
+    get_user_posts,
+    get_category_posts,
+)
 from django.views.generic import ListView, CreateView
 from django.views.generic import UpdateView, DeleteView, DetailView
 from django.http import Http404
 from django.shortcuts import redirect, get_object_or_404
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django.contrib.auth.models import User
-from django.utils import timezone
 from django.core.exceptions import PermissionDenied
-from django.db.models import Count
 from django.urls import reverse_lazy, reverse
 
 
@@ -18,16 +22,16 @@ class PostListView(ListView):
     template_name = 'blog/index.html'
 
     def get_queryset(self):
-        queryset = Post.objects.filter(
-            is_published=True,
-            pub_date__lte=timezone.now(),
-            category__is_published=True
-        ).select_related('author').prefetch_related(
-            'category', 'location').order_by('-pub_date').annotate(
-                comment_count=Count('comments')
-        )
+        return get_posts_with_comments_count().order_by('-pub_date')
 
-        return queryset
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        context['page_obj'] = get_paginated_page(
+            self.request, 
+            self.get_queryset(),
+            per_page=self.paginate_by
+        )
+        return context
 
 
 class PostCreateView(LoginRequiredMixin, CreateView):
@@ -45,19 +49,19 @@ class PostCreateView(LoginRequiredMixin, CreateView):
         return reverse('blog:profile', args=[username])
 
 
-class PostUpdateView(UpdateView):
+class PostUpdateView(LoginRequiredMixin, UpdateView):
     model = Post
     form_class = PostForm
     template_name = 'blog/create.html'
     pk_url_kwarg = 'post_id'
-    
+
     def test_func(self):
         self.object = self.get_object()
         return (
             self.request.user.is_authenticated
             and self.object.author == self.request.user
         )
-    
+
     def dispatch(self, request, *args, **kwargs):
         if not self.test_func():
             return redirect(reverse(
@@ -65,7 +69,7 @@ class PostUpdateView(UpdateView):
             ))
         else:
             return super().dispatch(request, *args, **kwargs)
-    
+
     def get_success_url(self):
         return reverse_lazy(
             'blog:post_detail', kwargs={'post_id': self.object.pk}
@@ -90,13 +94,13 @@ class PostDetailView(DetailView):
     def get_object(self, queryset=None):
         post_id = self.kwargs.get('post_id')
         post = get_object_or_404(Post, id=post_id)
-        if (
-            post.author == self.request.user
-            or (post.is_published and post.category.is_published
-                and post.pub_date <= timezone.now())
-        ):
 
+        if post.author == self.request.user:
             return post
+
+        if post.is_available():
+            return post
+
         raise Http404('Страница не найдена')
 
     def get_context_data(self, **kwargs):
@@ -105,7 +109,6 @@ class PostDetailView(DetailView):
         comments = post.comments.all().order_by('created_at')
         context['form'] = CommentForm()
         context['comments'] = comments
-
         return context
 
 
@@ -116,17 +119,19 @@ class ProfileView(ListView):
 
     def get_queryset(self):
         username = self.kwargs['username']
-        profile = get_object_or_404(User, username=username)
-        posts = Post.objects.filter(author=profile).select_related(
-            'author').prefetch_related('comments', 'category', 'location')
-        posts_annotated = posts.annotate(comment_count=Count('comments'))
-        return posts_annotated.order_by('-pub_date')
+        return get_user_posts(username).order_by('-pub_date')
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
         if 'profile' not in context:
             context['profile'] = get_object_or_404(
-                User, username=self.kwargs['username'])
+                User, username=self.kwargs['username']
+            )
+        context['page_obj'] = get_paginated_page(
+            self.request,
+            self.get_queryset(),
+            per_page=self.paginate_by
+        )
         return context
 
 
@@ -136,26 +141,21 @@ class CategoryPostsView(ListView):
     template_name = 'blog/category.html'
 
     def get_queryset(self):
-        self.category = get_object_or_404(
-            Category, slug=self.kwargs['category_slug'], is_published=True
-        )
-
-        queryset = Post.objects.filter(
-            is_published=True,
-            pub_date__lte=timezone.now(),
-            category=self.category
-        ).select_related('author',
-                         'category',
-                         'location').order_by('-pub_date')
-
-        queryset = queryset.annotate(comment_count=Count('comments'))
-        queryset = queryset.filter(category__is_published=True)
-
-        return queryset
+        category_slug = self.kwargs['category_slug']
+        return get_category_posts(category_slug).order_by('-pub_date')
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
-        context['category'] = self.category
+        context['category'] = get_object_or_404(
+            Category, 
+            slug=self.kwargs['category_slug'],
+            is_published=True
+        )
+        context['page_obj'] = get_paginated_page(
+            self.request,
+            self.get_queryset(),
+            per_page=self.paginate_by
+        )
         return context
 
 
