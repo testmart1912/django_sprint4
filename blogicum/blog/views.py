@@ -90,6 +90,7 @@ class PostDeleteView(LoginRequiredMixin, DeleteView):
 class PostDetailView(DetailView):
     model = Post
     template_name = 'blog/detail.html'
+    pk_url_kwarg = 'post_id'
 
     def get_object(self, queryset=None):
         post_id = self.kwargs.get('post_id')
@@ -105,7 +106,7 @@ class PostDetailView(DetailView):
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
-        post = self.get_object()
+        post = context['post']
         comments = post.comments.all().order_by('created_at')
         context['form'] = CommentForm()
         context['comments'] = comments
